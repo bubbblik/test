@@ -4,35 +4,36 @@
 #include "RTClib.h"
 #include "GyverButton.h"
 #include "GyverTimer.h" 
-
-int plot_array[20];         // массив данных для графика
+#include <MQ135.h>
 
 RTC_DS3231 rtc;
 BME280_I2C bme;
+MQ135 gasSensor = MQ135(A1);
+
 GButton btn1 (4, LOW_PULL, NORM_OPEN);
 GTimer_ms page1(5000);
 GTimer_ms page2(5000);
 GTimer_ms page3(5000);
-GTimer_ms hourPlotTimer(4*60*1000);
 
 LiquidCrystal_I2C lcd(0x27,20,4); 
 
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+int aFlag=0; // флаг для alarm
 
 byte prs[] = {0x4,0x2,0x2,0x4,0x15,0xe,0x4,0x1f};
 byte tem[] = {0x4,0xa,0xa,0xa,0x11,0x1f,0xe,0x0};
 byte hum[] = {0x3,0x6,0xe,0x1f,0x17,0x13,0xe,0x0};
-byte timer[] = {0x0,0xe,0x15,0x17,0x11,0xe,0x0,0x0};
-
+byte timer[] = {  B00000, B00000, B00110, B01010, B10001, B11111, B00000, B00000};
 
 int counter = 0;  
 long counter_set = 0;
 bool dop = 1; //костыль
-int tempHour[15];
 
 #define hold 1000           // время (мс), после которого кнопка считается зажатой
 #define debounce 80        // (мс), антидребезг
 unsigned long button1_timer; // таймер последнего нажатия кнопки
+
+//---------------------------------НАСТРОЙКИ--------------------
 
 void setup()
 {
@@ -44,13 +45,13 @@ void setup()
     while (1);
     }
       
-    bme.setTempCal(-1);// Temp was reading high so subtract 1 degree
+    bme.setTempCal(-2);// Temp was reading high so subtract 1 degree
     
     if (! rtc.begin()) {
       Serial.println("Couldn't find RTC");
       while (1);
     }
-    //rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); ОТЛАДКА ВРЕМЕНИ
+    //rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); ОТЛАДКА ВРЕМЕНИ(ЕСЛИ СБИЛОСЬ ВРЕМЯ)
   
     if (rtc.lostPower()) {
       Serial.println("RTC lost power, lets set the time!");
@@ -59,7 +60,7 @@ void setup()
     lcd.init();                      
     lcd.backlight(); 
 }
-   
+//---------------------------------ГЛАВНАЯ--------------------
 void loop()
 { 
   btn1.tick(); 
@@ -72,10 +73,6 @@ void loop()
       secondPage();
       dop = 0;
       break;
-      //case 2:
-      //redrawPlot();      
-      //dop = 0;
-      //break;
     }
 
   if (counter > 1)
@@ -91,37 +88,10 @@ void loop()
   counter = 0;
   lcd.clear();
   dop = 1;
-  }
-
-  plotSensorsTick();
-  
-  //if (page1.isReady())firstPage();  
-  //if (page2.isReady())secondPage();  
-  //if (page3.isReady())redrawPlot();  
+  }  
   
 }
 
-
-void initPlot() {
-  // необходимые символы для работы
-  // создано в http://maxpromer.github.io/LCD-Character-Creator/
-  byte row8[8] = {0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};
-  byte row7[8] = {0b00000,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};
-  byte row6[8] = {0b00000,  0b00000,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};
-  byte row5[8] = {0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};
-  byte row4[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111,  0b11111};
-  byte row3[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111};
-  byte row2[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111};
-  byte row1[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111};
-  lcd.createChar(0, row8);
-  lcd.createChar(1, row1);
-  lcd.createChar(2, row2);
-  lcd.createChar(3, row3);
-  lcd.createChar(4, row4);
-  lcd.createChar(5, row5);
-  lcd.createChar(6, row6);
-  lcd.createChar(7, row7);
-}
 
 uint8_t LT[8] = {B00111, B01111, B11111, B11111, B11111, B11111, B11111, B11111};
 uint8_t UB[8] = {B11111, B11111, B11111, B00000, B00000, B00000, B00000, B00000};
@@ -132,37 +102,7 @@ uint8_t LR[8] = {B11111, B11111, B11111, B11111, B11111, B11111, B11110, B11100}
 uint8_t MB[8] = {B11111, B11111, B11111, B00000, B00000, B00000, B11111, B11111};
 uint8_t block[8] = {B11111, B11111, B11111, B11111, B11111, B11111, B11111, B11111};
 
-void drawPlot(byte pos, byte row, byte width, byte height, int min_val, int max_val, int fill_val) { // графики(не используются)
-  for (byte i = 0; i < width; i++) {
-    plot_array[i] = plot_array[i + 1];
-  }
-  fill_val = constrain(fill_val, min_val, max_val);
-  plot_array[width] = fill_val;
-  for (byte i = 0; i < width; i++) {                  // каждый столбец параметров
-    byte infill, fract;
-    // найти количество целых блоков с учётом минимума и максимума для отображения на графике
-    infill = floor((float)(plot_array[i] - min_val) / (max_val - min_val) * height * 10);
-    fract = (infill % 10) * 8 / 10;                   // найти количество оставшихся полосок
-    infill = infill / 10;
-    for (byte n = 0; n < height; n++) {     // для всех строк графика
-      if (n < infill && infill > 0) {       // пока мы ниже уровня
-        lcd.setCursor(pos + i, (row - n));        // заполняем полными ячейками
-        lcd.write(0);
-      }
-      if (n >= infill) {                    // если достигли уровня
-        lcd.setCursor(pos + i, (row - n));
-        if (fract > 0) lcd.write(fract);          // заполняем дробные ячейки
-        else lcd.write(16);                       // если дробные == 0, заливаем пустой
-        for (byte k = n + 1; k < height; k++) {   // всё что сверху заливаем пустыми
-          lcd.setCursor(pos + i, (row - k));
-          lcd.write(16);
-        }
-        break;
-      }
-    }
-  }
-}
-
+// ------------------------------------ЧАСИКИ-------------------------
 void custom0(int x)
 { // uses segments to build the number 0
 
@@ -292,7 +232,56 @@ void dot(int x){
   lcd.write(1);
 }
 
+void print1(int digits, int x){
+  lcd.createChar(0,LT);
+  lcd.createChar(1,UB);
+  lcd.createChar(2,RT);
+  lcd.createChar(3,LL);
+  lcd.createChar(4,LB);
+  lcd.createChar(5,LR);
+  lcd.createChar(6,MB);
+  lcd.createChar(7,block);
+  // utility function for digital clock display: prints preceding colon and leading 0
+
+  switch (digits) {
+  case 0:  
+    custom0(x);
+    break;
+  case 1:  
+    custom1(x);
+    break;
+  case 2:  
+    custom2(x);
+    break;
+  case 3:  
+    custom3(x);
+    break;
+  case 4:  
+    custom4(x);
+    break;
+  case 5:  
+    custom5(x);
+    break;
+  case 6:  
+    custom6(x);
+    break;
+  case 7:  
+    custom7(x);
+    break;
+  case 8:  
+    custom8(x);
+    break;
+  case 9:  
+    custom9(x);
+    break;
+  }
+
+}
+
+// ------------------------------------ПЕРВАЯ СТРАНИЦА-------------------------
 void firstPage(){
+  Serial.print("1");
+  
   if (millis()-counter_set>=5000 || dop == 1){
           DateTime now = rtc.now();
           lcd.createChar(0, hum);
@@ -323,15 +312,26 @@ void firstPage(){
 
           lcd.setCursor(0,3);
           lcd.write(3);
-          lcd.print(" Time: ");
-          lcd.print(now.hour(), DEC);
-          lcd.print(':');
-          lcd.print(now.minute(), DEC);
+          lcd.print(" CO2: ");
+          lcd.print(gasSensor.getPPM());
+          lcd.print(" ppm");
+
+          if(gasSensor.getPPM()>750 && aFlag==0){
+            alert(1, 3);
+            aFlag = 1;
+          }
+      
+          if(gasSensor.getPPM()<=750 && aFlag==1){
+            disalert(1, 3);
+            aFlag = 0;
+          }
           
           counter_set = millis();
           
   }
 }
+
+// ------------------------------------ВТОРАЯ СТРАНИЦА-------------------------
 
 void secondPage(){
   if (millis()-counter_set>=5000 || dop == 1){
@@ -339,36 +339,44 @@ void secondPage(){
     digitalClockDisplay();
     printDay();
     bmePrint();
+
+    if(gasSensor.getPPM()>750 && aFlag==0){
+      alert(0, 3);
+      aFlag = 1;
+    }
+
+    if(gasSensor.getPPM()<=750 && aFlag==1){
+      disalert(0, 3);
+      aFlag = 0;
+    }
           
     counter_set = millis();
   }
 }
-/*
-void thirdPage(){
-  if (millis()-counter_set>=5000 || dop == 1){
-          initPlot(); 
-          int temp = bme.getTemperature_C();
-          int valueT = map(temp, 0, 60, 10, 80);
-          drawPlot(0, 3, 12, 4, 10, 80, valueT); 
 
-          lcd.setCursor(13,0);
-          lcd.print("Tem C");
-          lcd.setCursor(13,2);
-          lcd.print("Tem Now:");
-          lcd.setCursor(13,3);
-          lcd.print(bme.getTemperature_C());
-          lcd.print(" C");
-                
-          counter_set = millis();
-  }
-}*/
+// ------------------------------------АЛЕРТЫ-------------------------
+void alert(int x, int y) { 
+  lcd.setCursor(x, y);
+  lcd.write(7);
+}
+
+void disalert(int x, int y){
+  lcd.setCursor(x, y);
+  lcd.print(" ");
+}
+
+void thirdPage(){
+  
+}
+
+// ------------------------------------ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ-------------------------
 
 void bmePrint(){
   bme.readSensor();
   
   lcd.setCursor(1, 3);
-  lcd.print(int((bme.getPressure_MB()*100)/133.3));
-  lcd.print("mmHG");
+  lcd.print(int(gasSensor.getPPM()));
+  lcd.print("ppm");
   
   lcd.setCursor(10, 3);
   lcd.print(int(bme.getTemperature_C()));
@@ -408,70 +416,6 @@ void printDay(){
   lcd.print('/');
   lcd.print(now.year(), DEC);
 }
-
-void plotSensorsTick() {
-  // 4 минутный таймер
-  if (hourPlotTimer.isReady()) {
-    for (byte i = 0; i < 14; i++) {
-      tempHour[i] = tempHour[i + 1];
-      //humHour[i] = humHour[i + 1];
-    }
-    tempHour[14] = bme.getTemperature_C();
-    //humHour[14] = dispHum;
-  }
-}
-
-void redrawPlot() {
-  if(page3.isReady() || dop == 1){
-    lcd.clear();
-    switch (counter) {
-    case 2: drawPlot(0, 3, 15, 4, 10, 80, (int*)tempHour);
-      break;
-    /*case 2: drawPlot(0, 3, 15, 4, TEMP_MIN, TEMP_MAX, (int*)tempDay, "t day");
-      break;
-    case 3: drawPlot(0, 3, 15, 4, HUM_MIN, HUM_MAX, (int*)humHour, "h hr");
-      break;
-    case 4: drawPlot(0, 3, 15, 4, HUM_MIN, HUM_MAX, (int*)humDay, "h day");
-      break;
-    case 5: drawPlot(0, 3, 15, 4, PRESS_MIN, PRESS_MAX, (int*)pressHour, "p hr");
-      break;
-    case 6: drawPlot(0, 3, 15, 4, PRESS_MIN, PRESS_MAX, (int*)pressDay, "p day");
-      break;
-    case 7: drawPlot(0, 3, 15, 4, CO2_MIN, CO2_MAX, (int*)co2Hour, "c hr");
-      break;
-    case 8: drawPlot(0, 3, 15, 4, CO2_MIN, CO2_MAX, (int*)co2Day, "c day");
-      break;*/
-    }
-  }
-}
-
-void print1(int digits, int x){
-  lcd.createChar(0,LT);
-  lcd.createChar(1,UB);
-  lcd.createChar(2,RT);
-  lcd.createChar(3,LL);
-  lcd.createChar(4,LB);
-  lcd.createChar(5,LR);
-  lcd.createChar(6,MB);
-  lcd.createChar(7,block);
-  // utility function for digital clock display: prints preceding colon and leading 0
-
-  switch (digits) {
-  case 0:  
-    custom0(x);
-    break;
-  case 1:  
-    custom1(x);
-    break;
-  case 2:  
-    custom2(x);
-    break;
-  case 3:  
-    custom3(x);
-    break;
-  case 4:  
-    custom4(x);
-    break;
   case 5:  
     custom5(x);
     break;
